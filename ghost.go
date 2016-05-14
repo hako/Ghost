@@ -3,13 +3,9 @@ package ghost
 
 import (
 	"bytes"
-	"compress/gzip"
 	"crypto/aes"
 	"crypto/cipher"
-	"crypto/hmac"
 	"crypto/rand"
-	"crypto/rsa"
-	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/base64"
@@ -19,7 +15,6 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
-	"math/big"
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
@@ -108,16 +103,15 @@ type SnapTagImageFormat string
 
 // Account represents a single Snapchat account.
 type Account struct {
-	GoogleMail       string
-	GooglePassword   string
-	CasperClient     *casper.Casper
-	Debug            bool
-	AndroidAuthToken string
-	Token            string
-	Username         string
-	Password         string
-	UserID           string
-	ProxyURL         *url.URL
+	GoogleMail     string
+	GooglePassword string
+	CasperClient   *casper.Casper
+	Debug          bool
+	Token          string
+	Username       string
+	Password       string
+	UserID         string
+	ProxyURL       *url.URL
 }
 
 // Error handles errors returned by ghost methods.
@@ -130,43 +124,24 @@ func (e Error) Error() string {
 }
 
 // NewAccount creates a new Snapchat Account of type *Account.
-func NewAccount(gmail, gpassword string, cc *casper.Casper, debug bool) *Account {
+func NewAccount(apiKey, apiSecret string, debug bool) *Account {
+	casperClient := &casper.Casper{
+		APIKey:    apiKey,
+		APISecret: apiSecret,
+		Debug:     debug,
+	}
 	ghostAcc := &Account{
-		GoogleMail:       gmail,
-		GooglePassword:   gpassword,
-		CasperClient:     cc,
-		Debug:            debug,
-		AndroidAuthToken: "",
+		CasperClient: casperClient,
+		Debug:        debug,
 	}
 	return ghostAcc
 }
 
-// NewGhostCasperClient creates a new Casper API client of type *casper.Casper.
-func NewGhostCasperClient(apiKey, apiSecret, username, password string, debug bool) *casper.Casper {
-	casperClient := &casper.Casper{
-		APIKey:    apiKey,
-		APISecret: apiSecret,
-		Username:  username,
-		Password:  password,
-		Debug:     debug,
-	}
-	return casperClient
-}
-
-// NewRawCasperClient creates an empty Casper API client of type *casper.Casper.
-// Same as NewGhostCasperClient() But configurable.
-func NewRawCasperClient(apiKey, apiSecret string) *casper.Casper {
-	casperClient := &casper.Casper{
-		APIKey:    apiKey,
-		APISecret: apiSecret,
-	}
-	return casperClient
-}
-
-// NewRawAccount creates an empty Snapchat Account client of type *Account.
-// Same as NewAccount() But configurable.
-func NewRawAccount() *Account {
-	return &Account{}
+// setCredentials attaches the username, password to the casper client.
+func (acc *Account) setCredentials(username, password string) {
+	acc.CasperClient.Username = username
+	acc.CasperClient.Password = password
+	acc.Username = username
 }
 
 // DecodeSnaptag decodes Snapchat 'Snaptags'.
@@ -414,183 +389,19 @@ func RequestToken(AuthToken, timestamp string) string {
 	return bits
 }
 
-// encryptPasswd is an implemention of Google's EncryptPasswd for encrypting Google account passwords.
-func (acc *Account) encryptPasswd() string {
-	googleDefaultPubKey := "AAAAgMom/1a/v0lblO2Ubrt60J2gcuXSljGFQXgcyZWveWLEwo6prwgi3iJIZdodyhKZQrNWp5nKJ3srRXcUW+F1BD3baEVGcmEgqaLZUNBjm057pKRI16kB0YppeGx5qIQ5QjKzsR8ETQbKLNWgRY0QRNVz34kMJR3P/LgHax/6rmf5AAAAAwEAAQ=="
-	b64DecodedKey, err := base64.StdEncoding.DecodeString(googleDefaultPubKey)
-	if err != nil {
-		fmt.Println(err)
-	}
-	bigintMod := new(big.Int)
-	bigintExp := new(big.Int)
-	binarykey := hex.EncodeToString([]byte(b64DecodedKey))
-	half := binarykey[8:264]
-	modulus, b := bigintMod.SetString(half, 16)
-	if b != true {
-		fmt.Println(modulus, b)
-	}
-	half = binarykey[272:]
-	bigExponent, b := bigintExp.SetString(half, 16)
-	if b != true {
-		fmt.Println(bigExponent, b)
-	}
-	exponent, err := strconv.Atoi(bigExponent.String())
-	if err != nil {
-		fmt.Println(err)
-	}
-	h := sha1.New()
-	io.WriteString(h, string(b64DecodedKey))
-	hash := h.Sum(nil)
-
-	signature := "00" + hex.EncodeToString(hash[0:4])
-	pubkey := &rsa.PublicKey{N: modulus, E: exponent}
-	plain := acc.GoogleMail + "\x00" + acc.GooglePassword
-	s := sha1.New()
-	msg := []byte(plain)
-	encrypted, err := rsa.EncryptOAEP(s, rand.Reader, pubkey, msg, []byte(""))
-	if err != nil {
-		fmt.Println(err)
-	}
-	hexencrypted := hex.EncodeToString(encrypted)
-	output, err := hex.DecodeString(signature + string(hexencrypted))
-	if err != nil {
-		fmt.Println(err)
-	}
-
-	pass1 := strings.Replace(base64.StdEncoding.EncodeToString(output), "+", "-", -1)
-	b64encryptedPasswd := strings.Replace(pass1, "/", "_", -1)
-	return b64encryptedPasswd
-}
-
-// GetGCMToken fetches a GCM token from (You guessed it) Google.
-func (acc *Account) GetGCMToken() string {
-	var tr *http.Transport
-
-	tr = &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-	}
-
-	if acc.ProxyURL != nil {
-		tr.Proxy = http.ProxyURL(acc.ProxyURL)
-	}
-
-	client := &http.Client{Transport: tr}
-	clientGCMForm := url.Values{}
-	clientGCMForm.Add("device", "3847872624728098287")
-	clientGCMForm.Add("sender", "191410808405")
-	clientGCMForm.Add("app_ver", "564")
-	clientGCMForm.Add("gcm_ver", "7097038")
-	clientGCMForm.Add("app", "com.snapchat.android")
-	clientGCMForm.Add("iat", Timestamp())
-	clientGCMForm.Add("cert", "49f6badb81d89a9e38d65de76f09355071bd67e7")
-
-	req, err := http.NewRequest("POST", "https://android.clients.google.com/c2dm/register3", strings.NewReader(string(clientGCMForm.Encode())))
-
-	req.Header.Set("App", "com.snapchat.android")
-	req.Header.Set("User-Agent", "Android-GCM/1.5 (m7 KOT49H)")
-	req.Header.Set("Authorization", "AidLogin 3847872624728098287:1187196130325105010")
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Accept-Encoding", "gzip")
-
-	resp, err := client.Do(req)
-	gzBody, err := gzip.NewReader(resp.Body)
-	decompressedBody, err := ioutil.ReadAll(gzBody)
-	if acc.Debug == true {
-		fmt.Println(string(decompressedBody))
-	}
-	if err != nil {
-		fmt.Println(err)
-	}
-
-	token := string(decompressedBody)[6:]
-	return token
-}
-
-// GetAuthToken fetches an Android auth token.
-func (acc *Account) GetAuthToken() string {
-	var tr *http.Transport
-
-	tr = &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-	}
-
-	if acc.ProxyURL != nil {
-		tr.Proxy = http.ProxyURL(acc.ProxyURL)
-	}
-
-	encyptedPassword := acc.encryptPasswd()
-	client := &http.Client{Transport: tr}
-
-	authForm := url.Values{}
-	authForm.Add("device_country", "us")
-	authForm.Add("operatorCountry", "us")
-	authForm.Add("lang", "en_US")
-	authForm.Add("sdk_version", "19")
-	authForm.Add("google_play_services_version", "7097038")
-	authForm.Add("accountType", "HOSTED_OR_GOOGLE")
-	authForm.Add("Email", acc.GoogleMail)
-	authForm.Add("service", "audience:server:client_id:694893979329-l59f3phl42et9clpoo296d8raqoljl6p.apps.googleusercontent.com")
-	authForm.Add("source", "android")
-	authForm.Add("androidId", "378c184c6070c26c")
-	authForm.Add("app", "com.snapchat.android")
-	authForm.Add("client_sig", "49f6badb81d89a9e38d65de76f09355071bd67e7")
-	authForm.Add("callerPkg", "com.snapchat.android")
-	authForm.Add("callerSig", "49f6badb81d89a9e38d65de76f09355071bd67e7")
-	authForm.Add("EncryptedPasswd", encyptedPassword)
-
-	req, err := http.NewRequest("POST", "https://android.clients.google.com/auth", strings.NewReader(string(authForm.Encode())))
-	req.Header.Set("User-Agent", "GoogleAuth/1.4 (mako JDQ39)")
-	req.Header.Set("Device", "378c184c6070c26c")
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("App", "com.snapchat.android")
-	req.Header.Set("Accept", "*/*")
-	req.Header.Set("Accept-Encoding", "gzip")
-
-	resp, err := client.Do(req)
-	gzBody, err := gzip.NewReader(resp.Body)
-	decompressedBody, err := ioutil.ReadAll(gzBody)
-	if err != nil {
-		fmt.Println(err)
-	}
-	if acc.Debug == true {
-		fmt.Println(string(decompressedBody))
-	}
-	splitString := strings.Split(string(decompressedBody), "issueAdvice")
-	authToken := splitString[0][5:]
-	return authToken
-}
-
-// GetDeviceToken fetches the device token to use with Snapchat.
-func (acc *Account) GetDeviceToken() map[string]interface{} {
-	ts := Timestamp()
-	acc.SetAuthToken(acc.GetAuthToken())
-	data := map[string]string{
-		"timestamp": ts,
-		"req_token": RequestToken(StaticToken, ts),
-	}
-
-	resp := acc.SendRequest("POST", "/loq/device_id", data)
-	body, ioErr := ioutil.ReadAll(resp.Body)
-	if ioErr != nil {
-		fmt.Println(ioErr)
-	}
-	if acc.Debug == true {
-		fmt.Println(string(body))
-	}
-
-	var parsed map[string]interface{}
-	json.Unmarshal(body, &parsed)
-	return parsed
-}
-
 // SetAuthToken sets the auth token auth to current Snapchat account acc.
 func (acc *Account) SetAuthToken(auth string) {
-	acc.AndroidAuthToken = auth
+	acc.Token = auth
 }
 
-// AuthToken returns the auth token associated with the current Snapchat account acc.
-func (acc *Account) AuthToken() string {
-	return acc.AndroidAuthToken
+// SetAuthTokenWithUsername sets the auth token auth to current Snapchat account acc.
+// with a username username.
+// Usually used for an account which has already logged into Snapchat.
+func (acc *Account) SetAuthTokenWithUsername(username, auth string) {
+	acc.Token = auth
+	acc.CasperClient.AuthToken = auth
+	acc.Username = username
+	acc.CasperClient.Username = username
 }
 
 // SendRequest performs HTTP requests.
@@ -640,7 +451,7 @@ func (acc *Account) SendRequest(method, endpoint string, data map[string]string)
 			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		}
 
-		androidAuthToken := acc.AuthToken()
+		androidAuthToken := acc.Token
 
 		if endpoint == "/loq/login" || endpoint == "/loq/device_id" || endpoint == "/bq/solve_captcha" {
 			clientAuthToken, err := acc.CasperClient.GetClientAuthToken(acc.Username, acc.Password, data["timestamp"])
@@ -708,26 +519,23 @@ func (acc *Account) SendRequest(method, endpoint string, data map[string]string)
 }*/
 
 // SendMultipartRequest performs multipart HTTP requests.
-func (acc *Account) SendMultipartRequest(endpoint string, data map[string]string, path string) *http.Response {
+func (acc *Account) SendMultipartRequest(endpoint string, data map[string]string, path string, opts casper.Options) *http.Response {
 	var tr *http.Transport
 
 	tr = &http.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 	}
 
-	file, err := os.Open(path)
-	if err != nil {
-		fmt.Println(err)
-	}
-
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
-	err = writer.SetBoundary("Boundary+0xAbCdEfGbOuNdArY")
+	err := writer.SetBoundary("Boundary+0xAbCdEfGbOuNdArY")
 	if err != nil {
 		fmt.Println(err)
 	}
 	mh := make(textproto.MIMEHeader)
-	mh.Set("Content-Disposition", "form-data; name=\"data\"; filename=\"data\"")
+	if path != "" {
+		mh.Set("Content-Disposition", "form-data; name=\"data\"; filename=\"data\"")
+	}
 	mh.Set("Content-Type", "application/octet-stream")
 	partWriter, err := writer.CreatePart(mh)
 	if err != nil {
@@ -736,9 +544,17 @@ func (acc *Account) SendMultipartRequest(endpoint string, data map[string]string
 	if err != nil {
 		fmt.Println(err)
 	}
-	_, err = io.Copy(partWriter, file)
-	if err != nil {
-		fmt.Println(err)
+
+	if path != "" {
+		file, err := os.Open(path)
+		if err != nil {
+			fmt.Println(err)
+		}
+
+		_, err = io.Copy(partWriter, file)
+		if err != nil {
+			fmt.Println(err)
+		}
 	}
 
 	for k, v := range data {
@@ -770,11 +586,12 @@ func (acc *Account) SendMultipartRequest(endpoint string, data map[string]string
 	req, err := http.NewRequest("POST", URL+endpoint, body)
 	req.Header.Set("Content-Type", "multipart/form-data; boundary=Boundary+0xAbCdEfGbOuNdArY")
 
-	androidAuthToken := acc.AuthToken()
-	req.Header.Set("Accept-Language", AcceptLang)
-	req.Header.Set("Accept-Locale", AcceptLocale)
-	req.Header.Set("User-Agent", UserAgent)
-	req.Header.Set("X-Snapchat-Client-Auth-Token", "Bearer "+androidAuthToken)
+	req.Header.Set("Accept", opts.Headers["Accept"])
+	req.Header.Set("Accept-Locale", "en")
+	req.Header.Set("User-Agent", opts.Headers["User-Agent"])
+	req.Header.Set("Content-Length", string(body.Len()))
+	req.Header.Set("X-Snapchat-Client-Auth-Token", opts.Headers["X-Snapchat-Client-Auth-Token"])
+	req.Header.Set("X-Snapchat-UUID", opts.Headers["X-Snapchat-UUID"])
 
 	if acc.Debug == true {
 		for k, v := range req.Header {
@@ -791,193 +608,78 @@ func (acc *Account) SendMultipartRequest(endpoint string, data map[string]string
 }
 
 // Register registers a new Snapchat account.
-func (acc *Account) Register(username, password, email, birthday string) map[string]interface{} {
-	acc.Username = username
-	acc.Password = password
-
-	ts := Timestamp()
-	deviceToken := acc.GetDeviceToken()
-	reqToken := RequestToken(StaticToken, ts)
-
-	dsigStr := []byte(email + "|" + password + "|" + ts + "|" + reqToken)
-	h := hmac.New(sha256.New, []byte(deviceToken["dtoken1v"].(string)))
-	h.Write(dsigStr)
-
-	dsig := hex.EncodeToString(h.Sum(nil))[:20]
-	dtoken1i := deviceToken["dtoken1i"].(string)
-
-	acc.SetAuthToken(acc.GetAuthToken())
-	age, err := CalculateAge(birthday)
-
-	attestation, err := acc.CasperClient.GetAttestation(username, password, ts)
-
+func (acc *Account) Register(username, password, email, birthday string) (casper.Register, error) {
+	preregistration, err := acc.CasperClient.Register(username, password, email, birthday)
 	if err != nil {
-		fmt.Println(err)
+		return casper.Register{}, err
 	}
-
-	ssjson := StudySettings{
-		RegisterHideSkipPhone: RegisterHideSkipPhone{
-			Experimentid: "0",
-		},
-	}
-
-	studySettings := structToJSON(ssjson)
-
-	data := map[string]string{
-		"timestamp":      ts,
-		"req_token":      RequestToken(StaticToken, ts),
-		"email":          email,
-		"password":       password,
-		"dsig":           dsig,
-		"study_settings": studySettings,
-		"dtoken1i":       dtoken1i,
-		"attestation":    attestation,
-		"age":            age,
-		"birthday":       birthday,
-	}
-
-	resp := acc.SendRequest("POST", "/loq/register", data)
-	body, ioErr := ioutil.ReadAll(resp.Body)
-	if ioErr != nil {
-		fmt.Println(ioErr)
-	}
-	if acc.Debug == true {
-		fmt.Println(string(body))
-	}
-
-	var parsed map[string]interface{}
-	json.Unmarshal(body, &parsed)
-	return parsed
+	acc.SetAuthTokenWithUsername(username, preregistration.AuthToken)
+	return preregistration, nil
 }
 
 // RegisterUsername registers a new Snapchat username.
-func (acc *Account) RegisterUsername(username, email string) map[string]interface{} {
-	ts := Timestamp()
-	data := map[string]string{
-		"timestamp":         ts,
-		"req_token":         RequestToken(acc.Token, ts),
-		"username":          email,
-		"selected_username": username,
+func (acc *Account) RegisterUsername(selectedUsername, email string) (casper.Updates, error) {
+	registration, err := acc.CasperClient.RegisterUsername(selectedUsername, email)
+	if err != nil {
+		return casper.Updates{}, err
 	}
-
-	resp := acc.SendRequest("POST", "/loq/register_username", data)
-	body, ioErr := ioutil.ReadAll(resp.Body)
-	if ioErr != nil {
-		fmt.Println(ioErr)
-	}
-	if acc.Debug == true {
-		fmt.Println(string(body))
-	}
-
-	var parsed map[string]interface{}
-	json.Unmarshal(body, &parsed)
-	return parsed
+	return registration, nil
 }
 
 // VerifyPhoneNumber sends a phone number to Snapchat for verification.
-func (acc *Account) VerifyPhoneNumber(phoneNumber string) map[string]interface{} {
-	ts := Timestamp()
+func (acc *Account) VerifyPhoneNumber(phoneNumber string) (map[string]interface{}, error) {
 	number, err := phone.Normalise(phoneNumber, "")
 	if err != nil {
-		fmt.Println(err)
+		return nil, err
 	}
-	// Get country code out of phone number.
-	data := map[string]string{
-		"timestamp":        ts,
-		"req_token":        RequestToken(acc.Token, ts),
-		"username":         acc.Username,
-		"countryCode":      number.Country[:2],
-		"skipConfirmation": "true",
-		"phoneNumber":      phoneNumber,
-		"action":           "updatePhoneNumber",
-	}
-
-	resp := acc.SendRequest("POST", "/bq/phone_verify", data)
-	body, ioErr := ioutil.ReadAll(resp.Body)
-	if ioErr != nil {
-		fmt.Println(ioErr)
+	body, err := acc.CasperClient.VerifyPhoneNumber(phoneNumber, number.Country[:2])
+	if err != nil {
+		return nil, err
 	}
 	if acc.Debug == true {
 		fmt.Println(string(body))
 	}
-
 	var parsed map[string]interface{}
 	json.Unmarshal(body, &parsed)
-	return parsed
+	return parsed, nil
 }
 
 // SendSMSCode sends an SMS code to Snapchat.
-func (acc *Account) SendSMSCode(code string) map[string]interface{} {
-	ts := Timestamp()
-	data := map[string]string{
-		"timestamp": ts,
-		"req_token": RequestToken(acc.Token, ts),
-		"username":  acc.Username,
-		"action":    "verifyPhoneNumber",
-		"code":      code,
-		"type":      "DEFAULT_TYPE",
-	}
-
-	resp := acc.SendRequest("POST", "/bq/phone_verify", data)
-	body, ioErr := ioutil.ReadAll(resp.Body)
-	if ioErr != nil {
-		fmt.Println(ioErr)
+func (acc *Account) SendSMSCode(code string) (map[string]interface{}, error) {
+	body, err := acc.CasperClient.SendSMSCode(code)
+	if err != nil {
+		return nil, err
 	}
 	if acc.Debug == true {
 		fmt.Println(string(body))
 	}
-
 	var parsed map[string]interface{}
 	json.Unmarshal(body, &parsed)
-	return parsed
+	return parsed, nil
 }
 
 // GetCaptcha fetches a captcha puzzle from snapchat.
-func (acc *Account) GetCaptcha() string {
-	ts := Timestamp()
-	data := map[string]string{
-		"timestamp": ts,
-		"req_token": RequestToken(acc.Token, ts),
-		"username":  acc.Username,
+func (acc *Account) GetCaptcha() (string, error) {
+	captcha, err := acc.CasperClient.GetCaptcha()
+	if err != nil {
+		return "", err
 	}
-
-	resp := acc.SendRequest("POST", "/bq/get_captcha", data)
-	body, ioErr := ioutil.ReadAll(resp.Body)
-	if ioErr != nil {
-		fmt.Println(ioErr)
-	}
-	filename := resp.Header["Content-Disposition"][0][20:]
 	if acc.Debug == true {
-		fmt.Println("< CAPTCHA ZIP: " + filename + " >")
+		fmt.Println("< CAPTCHA ZIP: " + captcha.ID + " >")
 	}
-	captchaID := strings.Replace(filename, ".zip", "", 1)
-	ioutil.WriteFile(filename, body, 0644)
-	return captchaID
+	captchaID := strings.Replace(captcha.ID, ".zip", "", 1)
+	ioutil.WriteFile(captcha.ID, captcha.Data, 0644)
+	return captchaID, nil
 }
 
-// SolveCaptcha fetches a captcha puzzle from snapchat.
-func (acc *Account) SolveCaptcha(captchaID, solution string) map[string]interface{} {
-	ts := Timestamp()
-	data := map[string]string{
-		"timestamp":        ts,
-		"captcha_solution": solution,
-		"captcha_id":       captchaID,
-		"req_token":        RequestToken(acc.Token, ts),
-		"username":         acc.Username,
+// SolveCaptcha solves the captcha puzzle from snapchat.
+// An account is validated afterwards.
+func (acc *Account) SolveCaptcha(captchaID, solution string) (string, error) {
+	body, err := acc.CasperClient.SolveCaptcha(captchaID, solution)
+	if err != nil {
+		return "", err
 	}
-
-	resp := acc.SendRequest("POST", "/bq/solve_captcha", data)
-	body, ioErr := ioutil.ReadAll(resp.Body)
-	if ioErr != nil {
-		fmt.Println(ioErr)
-	}
-	if acc.Debug == true {
-		fmt.Println(string(body))
-	}
-
-	var parsed map[string]interface{}
-	json.Unmarshal(body, &parsed)
-	return parsed
+	return body, nil
 }
 
 //	RegisterExpire expires a device id.
@@ -1004,88 +706,27 @@ func (acc *Account) SolveCaptcha(captchaID, solution string) map[string]interfac
 // }
 
 // Login logs the user into Snapchat.
-func (acc *Account) Login() error {
-	acc.Username = acc.CasperClient.Username
-	acc.Password = acc.CasperClient.Password
-
-	deviceToken := acc.GetDeviceToken()
-
-	ts := Timestamp()
-	reqToken := RequestToken(StaticToken, ts)
-
-	dsigStr := []byte(acc.Username + "|" + acc.Password + "|" + ts + "|" + reqToken)
-	h := hmac.New(sha256.New, []byte(deviceToken["dtoken1v"].(string)))
-	h.Write(dsigStr)
-	dsig := hex.EncodeToString(h.Sum(nil))[:20]
-	dtoken1i := deviceToken["dtoken1i"].(string)
-
-	acc.SetAuthToken(acc.GetAuthToken())
-	attestation, err := acc.CasperClient.GetAttestation(acc.Username, acc.Password, ts)
+func (acc *Account) Login(username, password string) (casper.Updates, error) {
+	acc.setCredentials(username, password)
+	body, err := acc.CasperClient.Login(username, password)
 	if err != nil {
-		fmt.Println(err)
+		return casper.Updates{}, err
 	}
-
-	data := map[string]string{
-		"application_id":   "com.snapchat.android",
-		"height":           "1280",
-		"width":            "720",
-		"max_Video_height": "640",
-		"max_Video_width":  "480",
-		"dsig":             dsig,
-		"dtoken1i":         dtoken1i,
-		"attestation":      attestation,
-		"sflag":            "1",
-		"ptoken":           "ie",
-		"username":         acc.Username,
-		"timestamp":        ts,
-		"req_token":        reqToken,
-		"password":         acc.Password,
-	}
-
-	resp := acc.SendRequest("POST", "/loq/login", data)
-	body, ioErr := ioutil.ReadAll(resp.Body)
-	if ioErr != nil {
-		fmt.Println(ioErr)
-	}
-	if acc.Debug == true {
-		fmt.Println(string(body))
-	}
-
-	var parsed Updates
-	json.Unmarshal(body, &parsed)
-
-	if parsed.UpdatesResponse.Logged == true {
-		acc.Token = parsed.UpdatesResponse.AuthToken
-		acc.UserID = parsed.UpdatesResponse.UserID
-		return nil
-	}
-	var scerror Error
-	json.Unmarshal(body, &scerror.Err)
-	return scerror
+	acc.Token = body.UpdatesResponse.AuthToken
+	acc.UserID = body.UpdatesResponse.UserID
+	return body, nil
 }
 
 // Logout logs the user out of Snapchat.
-func (acc *Account) Logout() bool {
-	ts := Timestamp()
-	data := map[string]string{
-		"username":  acc.Username,
-		"timestamp": ts,
-		"req_token": RequestToken(acc.Token, ts),
-	}
-
-	resp := acc.SendRequest("POST", "/ph/logout", data)
-	body, ioErr := ioutil.ReadAll(resp.Body)
-	if ioErr != nil {
-		fmt.Println(ioErr)
+func (acc *Account) Logout() (bool, error) {
+	body, err := acc.CasperClient.Logout()
+	if err != nil {
+		return false, err
 	}
 	if acc.Debug == true {
-		fmt.Println(string(body))
+		fmt.Println("Logged out?: " + strconv.FormatBool(body))
 	}
-	if resp.StatusCode != 200 {
-		return false
-	}
-
-	return true
+	return true, nil
 }
 
 // FetchBlob fetches a single media blob.
@@ -1126,7 +767,6 @@ func (acc *Account) FetchStoryBlob(mediaID, b64Iv, b64Key string) error {
 	if err != nil {
 		return err
 	}
-
 	if SnapchatMediaType(mediaType) == MediaVideo {
 		ioutil.WriteFile(mediaID+".zip", data, 0644)
 	} else {
@@ -1136,159 +776,87 @@ func (acc *Account) FetchStoryBlob(mediaID, b64Iv, b64Key string) error {
 }
 
 // IPRouting gets IP Routing URLs.
-func (acc *Account) IPRouting() map[string]interface{} {
-	ts := Timestamp()
-	data := map[string]string{
-		"username":           acc.Username,
-		"userId":             acc.Username,
-		"timestamp":          ts,
-		"req_token":          RequestToken(acc.Token, ts),
-		"currentUrlEntities": "",
-	}
-
-	resp := acc.SendRequest("POST", "/bq/ip_routing", data)
-	body, ioErr := ioutil.ReadAll(resp.Body)
-	if ioErr != nil {
-		fmt.Println(ioErr)
+func (acc *Account) IPRouting() (map[string]interface{}, error) {
+	body, err := acc.CasperClient.IPRouting()
+	if err != nil {
+		return nil, err
 	}
 	if acc.Debug == true {
 		fmt.Println(string(body))
 	}
 	var parsed map[string]interface{}
 	json.Unmarshal(body, &parsed)
-	return parsed
-}
-
-// Updates gets all the Snapchat updates for the authenticated account.
-func (acc *Account) Updates() (Updates, error) {
-	ts := Timestamp()
-	data := map[string]string{
-		"checksums_dict":   "{}",
-		"height":           "1280",
-		"width":            "720",
-		"max_video_height": "640",
-		"max_Video_width":  "480",
-		"username":         acc.Username,
-		"timestamp":        ts,
-		"req_token":        RequestToken(acc.Token, ts),
-	}
-
-	resp := acc.SendRequest("POST", "/loq/all_updates", data)
-	body, ioErr := ioutil.ReadAll(resp.Body)
-	if ioErr != nil {
-		return Updates{}, ioErr
-	}
-	if acc.Debug == true {
-		fmt.Println(string(body))
-	}
-	var parsed Updates
-	json.Unmarshal(body, &parsed)
 	return parsed, nil
 }
 
-// SuggestedFriends fetches all the Snapchat suggested friends.
-func (acc *Account) SuggestedFriends() SuggestedFriends {
-	ts := Timestamp()
-	data := map[string]string{
-		"action":    "list",
-		"username":  acc.Username,
-		"timestamp": ts,
-		"req_token": RequestToken(acc.Token, ts),
+// Updates gets all the Snapchat updates for the authenticated account.
+func (acc *Account) Updates() (casper.Updates, error) {
+	body, err := acc.CasperClient.Updates()
+	if err != nil {
+		return casper.Updates{}, err
 	}
+	acc.UserID = body.UpdatesResponse.UserID
+	return body, nil
+}
 
-	resp := acc.SendRequest("POST", "/bq/suggest_friend", data)
-	body, ioErr := ioutil.ReadAll(resp.Body)
-	if ioErr != nil {
-		fmt.Println(ioErr)
+// SuggestedFriends fetches all the Snapchat suggested friends.
+func (acc *Account) SuggestedFriends() (SuggestedFriends, error) {
+	body, err := acc.CasperClient.SuggestedFriends()
+	if err != nil {
+		return SuggestedFriends{}, err
 	}
 	if acc.Debug == true {
 		fmt.Println(string(body))
 	}
 	var parsed SuggestedFriends
 	json.Unmarshal(body, &parsed)
-	return parsed
+	return parsed, nil
 }
 
 // LoadLensSchedule fetches the lens schedule for the authenticated account.
-func (acc *Account) LoadLensSchedule() LensSchedule {
-	ts := Timestamp()
-	data := map[string]string{
-		"username":  acc.Username,
-		"timestamp": ts,
-		"req_token": RequestToken(acc.Token, ts),
-	}
-
-	resp := acc.SendRequest("POST", "/lens/load_schedule", data)
-	body, ioErr := ioutil.ReadAll(resp.Body)
-	if ioErr != nil {
-		fmt.Println(ioErr)
+// Not working as of now.
+func (acc *Account) LoadLensSchedule() (LensSchedule, error) {
+	body, err := acc.CasperClient.LoadLensSchedule()
+	if err != nil {
+		return LensSchedule{}, err
 	}
 	if acc.Debug == true {
 		fmt.Println(string(body))
 	}
 	var parsed LensSchedule
 	json.Unmarshal(body, &parsed)
-	return parsed
+	return parsed, nil
 }
 
 // DiscoverChannels fetches Snapchat discover channels.
-func (acc *Account) DiscoverChannels() Discover {
-	var tr *http.Transport
-	var discoverURL = URL + "/discover/channel_list?region=US&country=USA&version=1&language=en"
-
-	tr = &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-	}
-
-	if acc.ProxyURL != nil {
-		tr.Proxy = http.ProxyURL(acc.ProxyURL)
-	}
-
-	if acc.Debug == true {
-		fmt.Printf("GET"+"\t%s\n", discoverURL)
-	}
-
-	client := &http.Client{Transport: tr}
-
-	req, err := http.NewRequest("GET", discoverURL, nil)
-
-	req.Header.Set("User-Agent", UserAgent)
-	req.Header.Set("Accept-Language", AcceptLang)
-	req.Header.Set("Accept-Locale", AcceptLocale)
-
-	resp, err := client.Do(req)
+func (acc *Account) DiscoverChannels() (Discover, error) {
+	body, err := acc.CasperClient.DiscoverChannels()
 	if err != nil {
-		fmt.Println(err)
-	}
-
-	body, ioErr := ioutil.ReadAll(resp.Body)
-	if ioErr != nil {
-		fmt.Println(ioErr)
+		return Discover{}, err
 	}
 	if acc.Debug == true {
 		fmt.Println(string(body))
 	}
 	var parsed Discover
 	json.Unmarshal(body, &parsed)
-	return parsed
+	return parsed, nil
 }
 
 // DownloadSnapTag fetches the authenticated users Snaptag.
+// Note: calls acc.Update() to get authenticated users SnapTag if acc.UserID is not set.
 func (acc *Account) DownloadSnapTag(sfmt SnapTagImageFormat) (SnapTag, error) {
-	ts := Timestamp()
-	format := string(sfmt)
-	data := map[string]string{
-		"username":  acc.Username,
-		"timestamp": ts,
-		"type":      format,
-		"req_token": RequestToken(acc.Token, ts),
-		"user_id":   acc.UserID,
+	if acc.UserID == "" {
+		updates, err := acc.Updates()
+		if err != nil {
+			return SnapTag{}, err
+		}
+		acc.UserID = updates.UpdatesResponse.UserID
 	}
 
-	resp := acc.SendRequest("POST", "/bq/snaptag_download", data)
-	body, ioErr := ioutil.ReadAll(resp.Body)
-	if ioErr != nil {
-		return SnapTag{}, ioErr
+	format := string(sfmt)
+	body, err := acc.CasperClient.DownloadSnapTag(acc.UserID, format)
+	if err != nil {
+		return SnapTag{}, err
 	}
 	if acc.Debug == true {
 		fmt.Println(string(body))
@@ -1302,20 +870,10 @@ func (acc *Account) DownloadSnapTag(sfmt SnapTagImageFormat) (SnapTag, error) {
 // Requires their Snapchat user_id in the form:
 // 84ee8839-3911-492d-8b94-72dd80f3713a
 func (acc *Account) DownloadFriendSnapTag(userID string, sfmt SnapTagImageFormat) (SnapTag, error) {
-	ts := Timestamp()
 	format := string(sfmt)
-	data := map[string]string{
-		"username":  acc.Username,
-		"timestamp": ts,
-		"type":      format,
-		"req_token": RequestToken(acc.Token, ts),
-		"user_id":   userID,
-	}
-
-	resp := acc.SendRequest("POST", "/bq/snaptag_download", data)
-	body, ioErr := ioutil.ReadAll(resp.Body)
-	if ioErr != nil {
-		return SnapTag{}, ioErr
+	body, err := acc.CasperClient.DownloadSnapTag(userID, format)
+	if err != nil {
+		return SnapTag{}, err
 	}
 	if acc.Debug == true {
 		fmt.Println(string(body))
@@ -1327,28 +885,28 @@ func (acc *Account) DownloadFriendSnapTag(userID string, sfmt SnapTagImageFormat
 
 // Upload sends media to Snapchat.
 func (acc *Account) Upload(path string) (string, error) {
-	ts := Timestamp()
 	id := MediaID(acc.Username)
-
 	file, err := ioutil.ReadFile(path)
 	if err != nil {
 		return "", errors.New("File does not exist.")
 	}
-
 	mediaType, err := DetectMedia(file)
 	if err != nil {
 		return "", err
 	}
-
+	options, err := acc.CasperClient.Upload()
+	if err != nil {
+		return "", err
+	}
 	data := map[string]string{
 		"media_id":  id,
-		"req_token": RequestToken(acc.Token, ts),
-		"timestamp": ts,
+		"req_token": options.Params["req_token"],
+		"timestamp": options.Params["timestamp"],
 		"type":      mediaType,
 		"username":  acc.Username,
 		"zipped":    "0",
 	}
-	resp := acc.SendMultipartRequest("/ph/upload", data, path)
+	resp := acc.SendMultipartRequest("/ph/upload", data, path, options)
 	body, ioErr := ioutil.ReadAll(resp.Body)
 	if ioErr != nil {
 		fmt.Println(ioErr)
@@ -1364,35 +922,12 @@ func (acc *Account) Upload(path string) (string, error) {
 
 // Send sends media to other Snapchat users.
 func (acc *Account) Send(mediaID string, recipients []string, time int) (map[string]interface{}, error) {
-	ts := Timestamp()
-	rp, err := json.Marshal(recipients)
+	body, err := acc.CasperClient.Send(mediaID, recipients, time)
 	if err != nil {
 		return nil, err
 	}
-	timeString := strconv.Itoa(int(time))
-	data := map[string]string{
-		"username":            acc.Username,
-		"timestamp":           ts,
-		"req_token":           RequestToken(acc.Token, ts),
-		"media_id":            mediaID,
-		"recipients":          string(rp),
-		"reply":               "0",
-		"time":                timeString,
-		"country_code":        "US",
-		"camera_front_facing": "0",
-		"zipped":              "0",
-	}
-
-	resp := acc.SendRequest("POST", "/loq/send", data)
-	body, ioErr := ioutil.ReadAll(resp.Body)
-	if ioErr != nil {
-		return nil, ioErr
-	}
 	if acc.Debug == true {
 		fmt.Println(string(body))
-	}
-	if resp.StatusCode != 200 {
-		return nil, errors.New("An error occured: HTTP Status: " + resp.Status)
 	}
 	var parsed map[string]interface{}
 	json.Unmarshal(body, &parsed)
@@ -1426,8 +961,11 @@ func (acc *Account) RetrySend(mediaID string, path string, recipients []string, 
 		"camera_front_facing": "0",
 		"zipped":              "0",
 	}
-
-	resp := acc.SendMultipartRequest("/loq/retry", data, path)
+	options, err := acc.CasperClient.RetrySend()
+	if err != nil {
+		return nil, err
+	}
+	resp := acc.SendMultipartRequest("/loq/retry", data, path, options)
 	body, ioErr := ioutil.ReadAll(resp.Body)
 	if ioErr != nil {
 		return nil, ioErr
@@ -1445,149 +983,99 @@ func (acc *Account) RetrySend(mediaID string, path string, recipients []string, 
 
 // Stories fetches the current users Snapchat stories.
 // Useful if you only want the Snapchat stories.
-func (acc *Account) Stories() (Stories, error) {
-	ts := Timestamp()
-	data := map[string]string{
-		"timestamp": ts,
-		"req_token": RequestToken(acc.Token, ts),
-		"username":  acc.Username,
+func (acc *Account) Stories() (casper.Stories, error) {
+	body, err := acc.CasperClient.Stories()
+	if err != nil {
+		return casper.Stories{}, err
 	}
-
-	resp := acc.SendRequest("POST", "/bq/stories", data)
-	body, ioErr := ioutil.ReadAll(resp.Body)
-	if ioErr != nil {
-		return Stories{}, ioErr
-	}
-	if acc.Debug == true {
-		fmt.Println(string(body))
-	}
-	var parsed Stories
-	json.Unmarshal(body, &parsed)
-	return parsed, nil
+	return body, nil
 }
 
 // PostStory posts media to a users Snapchat story.
-func (acc *Account) PostStory(mediaID string, path string, caption string, time int) (map[string]interface{}, error) {
-	ts := Timestamp()
-
+func (acc *Account) PostStory(mediaID string, path string, caption string, time int) (StorySnap, error) {
 	file, err := ioutil.ReadFile(path)
 	if err != nil {
-		return nil, errors.New("File does not exist.")
+		return StorySnap{}, errors.New("File does not exist.")
 	}
-
 	mediaType, err := DetectMedia(file)
 	if err != nil {
-		return nil, err
+		return StorySnap{}, err
 	}
-
 	if caption == "" {
 		caption = ""
 	}
-
-	data := map[string]string{
-		"camera_front_facing":  "0",
-		"username":             acc.Username,
-		"timestamp":            ts,
-		"req_token":            RequestToken(acc.Token, ts),
-		"media_id":             mediaID,
-		"my_story":             "true",
-		"client_id":            mediaID,
-		"story_timestamp":      ts,
-		"shared_ids":           "{}",
-		"caption_text_display": caption,
-		"type":                 mediaType,
-		"time":                 string(time),
-	}
-
-	resp := acc.SendRequest("POST", "/bq/post_story", data)
-	body, ioErr := ioutil.ReadAll(resp.Body)
-	if ioErr != nil {
-		return nil, ioErr
+	body, err := acc.CasperClient.PostStory(mediaID, caption, time, mediaType)
+	if err != nil {
+		return StorySnap{}, err
 	}
 	if acc.Debug == true {
 		fmt.Println(string(body))
 	}
-	if resp.StatusCode != 200 {
-		return nil, errors.New("An error occured: HTTP Status: " + resp.Status)
-	}
-	var parsed map[string]interface{}
+	var parsed StorySnap
 	json.Unmarshal(body, &parsed)
 	return parsed, nil
 }
 
 // RetryPostStory retries to post media to a users Snapchat story.
-func (acc *Account) RetryPostStory(mediaID string, path string, caption string, time int) (map[string]interface{}, error) {
+func (acc *Account) RetryPostStory(path string, caption string, time int) (StorySnap, error) {
 	ts := Timestamp()
-
+	id := MediaID(acc.Username)
 	file, err := ioutil.ReadFile(path)
 	if err != nil {
-		return nil, errors.New("File does not exist.")
+		return StorySnap{}, errors.New("File does not exist.")
 	}
-
 	mediaType, err := DetectMedia(file)
 	if err != nil {
-		return nil, err
+		return StorySnap{}, err
 	}
-
 	if caption == "" {
 		caption = ""
 	}
-
+	options, err := acc.CasperClient.RetryPostStory()
+	if err != nil {
+		return StorySnap{}, err
+	}
 	timeString := strconv.Itoa(int(time))
 	data := map[string]string{
-		"username":             acc.Username,
-		"timestamp":            ts,
-		"req_token":            RequestToken(acc.Token, ts),
-		"media_id":             mediaID,
-		"client_id":            mediaID,
-		"caption_text_display": caption,
-		"type":                 mediaType,
-		"time":                 timeString,
+		"camera_front_facing": "0",
+		"orientation":         "0",
+		"username":            acc.Username,
+		"req_token":           options.Params["req_token"],
+		"timestamp":           options.Params["timestamp"],
+		"story_timestamp":     ts,
+		"media_id":            id,
+		"client_id":           id,
+		"zipped":              "0",
+		"type":                mediaType,
+		"time":                timeString,
 	}
-
-	resp := acc.SendMultipartRequest("/bq/retry_post_story", data, path)
+	resp := acc.SendMultipartRequest("/bq/retry_post_story", data, path, options)
 	body, ioErr := ioutil.ReadAll(resp.Body)
 	if ioErr != nil {
-		return nil, ioErr
+		return StorySnap{}, ioErr
 	}
 	if acc.Debug == true {
 		fmt.Println(string(body))
 	}
-	if resp.StatusCode != 200 {
-		return nil, errors.New("An error occured: HTTP Status: " + resp.Status)
+	if resp.StatusCode != 202 {
+		return StorySnap{}, errors.New("An error occured: HTTP Status: " + resp.Status)
 	}
-	var parsed map[string]interface{}
+	var parsed StorySnap
 	json.Unmarshal(body, &parsed)
 	return parsed, nil
 }
 
 // DeleteStory deletes media from a Snapchat story.
-func (acc *Account) DeleteStory(id string) (bool, error) {
-	ts := Timestamp()
-	data := map[string]string{
-		"username":  acc.Username,
-		"timestamp": ts,
-		"req_token": RequestToken(acc.Token, ts),
-		"story_id":  id,
+func (acc *Account) DeleteStory(id string) error {
+	err := acc.CasperClient.DeleteStory(id)
+	if err != nil {
+		return err
 	}
-
-	resp := acc.SendRequest("POST", "/bq/delete_story", data)
-	body, ioErr := ioutil.ReadAll(resp.Body)
-	if ioErr != nil {
-		return false, ioErr
-	}
-	if acc.Debug == true {
-		fmt.Println(string(body))
-	}
-	if resp.StatusCode != 204 {
-		return false, errors.New("An error occured: HTTP Status: " + resp.Status)
-	}
-
-	return true, nil
+	return nil
 }
 
 // DoublePost posts a snap to a users Snapchat story and to other Snapchat users.
-func (acc *Account) DoublePost(mediaID string, path string, recipients []string, caption string, time int) (StorySnap, error) {
+func (acc *Account) DoublePost(path string, recipients []string, caption string, time int) (StorySnapFull, error) {
 	ts := Timestamp()
 	var rp string
 	for i, v := range recipients {
@@ -1601,63 +1089,59 @@ func (acc *Account) DoublePost(mediaID string, path string, recipients []string,
 			rp += "\"]"
 		}
 	}
-
 	file, err := ioutil.ReadFile(path)
 	if err != nil {
-		return StorySnap{}, errors.New("File does not exist.")
+		return StorySnapFull{}, errors.New("File does not exist.")
 	}
-
 	mediaType, err := DetectMedia(file)
 	if err != nil {
-		return StorySnap{}, err
+		return StorySnapFull{}, err
 	}
-
 	if caption == "" {
 		caption = ""
 	}
-
+	id, err := acc.Upload(path)
+	if err != nil {
+		return StorySnapFull{}, err
+	}
+	options, err := acc.CasperClient.DoublePost()
+	if err != nil {
+		return StorySnapFull{}, err
+	}
 	data := map[string]string{
 		"username":             acc.Username,
-		"timestamp":            ts,
-		"req_token":            RequestToken(acc.Token, ts),
-		"media_id":             mediaID,
-		"my_story":             "true",
-		"client_id":            mediaID,
+		"req_token":            options.Params["req_token"],
+		"timestamp":            options.Params["timestamp"],
+		"media_id":             id,
+		"client_id":            id,
+		"orientation":          "0",
+		"reply":                "0",
 		"recipients":           string(rp),
-		"shared_ids":           "{}",
+		"camera_front_facing":  "0",
 		"story_timestamp":      ts,
 		"caption_text_display": caption,
 		"type":                 mediaType,
 		"time":                 string(time),
+		"zipped":               "0",
 	}
-
-	resp := acc.SendRequest("POST", "/loq/double_post", data)
+	resp := acc.SendMultipartRequest("/loq/double_post", data, "", options)
 	body, ioErr := ioutil.ReadAll(resp.Body)
 	if ioErr != nil {
-		return StorySnap{}, ioErr
+		return StorySnapFull{}, ioErr
 	}
 	if acc.Debug == true {
 		fmt.Println(string(body))
 	}
-	var parsed StorySnap
+	var parsed StorySnapFull
 	json.Unmarshal(body, &parsed)
 	return parsed, nil
 }
 
 // UserExists checks if a username exists in Snapchat.
 func (acc *Account) UserExists(requestUsername string) (map[string]interface{}, error) {
-	ts := Timestamp()
-	data := map[string]string{
-		"username":         acc.Username,
-		"request_username": requestUsername,
-		"timestamp":        ts,
-		"req_token":        RequestToken(acc.Token, ts),
-	}
-
-	resp := acc.SendRequest("POST", "/bq/user_exists", data)
-	body, ioErr := ioutil.ReadAll(resp.Body)
-	if ioErr != nil {
-		return nil, ioErr
+	body, err := acc.CasperClient.UserExists(requestUsername)
+	if err != nil {
+		return nil, err
 	}
 	if acc.Debug == true {
 		fmt.Println(string(body))
@@ -1669,23 +1153,9 @@ func (acc *Account) UserExists(requestUsername string) (map[string]interface{}, 
 
 // FindFriends finds friends using a phone number from contacts.
 func (acc *Account) FindFriends(countryCode string, contacts map[string]string) (map[string]interface{}, error) {
-	ts := Timestamp()
-	nums, err := json.Marshal(contacts)
+	body, err := acc.CasperClient.FindFriends(countryCode, contacts)
 	if err != nil {
-		fmt.Println(err)
-	}
-	data := map[string]string{
-		"username":    acc.Username,
-		"timestamp":   ts,
-		"req_token":   RequestToken(acc.Token, ts),
-		"countryCode": countryCode,
-		"numbers":     string(nums),
-	}
-
-	resp := acc.SendRequest("POST", "/bq/find_friends", data)
-	body, ioErr := ioutil.ReadAll(resp.Body)
-	if ioErr != nil {
-		return nil, ioErr
+		return nil, err
 	}
 	if acc.Debug == true {
 		fmt.Println(string(body))
@@ -1697,19 +1167,9 @@ func (acc *Account) FindFriends(countryCode string, contacts map[string]string) 
 
 // AddFriend adds a friend on Snapchat.
 func (acc *Account) AddFriend(friend string) (Friend, error) {
-	ts := Timestamp()
-	data := map[string]string{
-		"username":  acc.Username,
-		"timestamp": ts,
-		"req_token": RequestToken(acc.Token, ts),
-		"action":    "add",
-		"friend":    friend,
-	}
-
-	resp := acc.SendRequest("POST", "/bq/friend", data)
-	body, ioErr := ioutil.ReadAll(resp.Body)
-	if ioErr != nil {
-		return Friend{}, ioErr
+	body, err := acc.CasperClient.Friend(friend, "add", "")
+	if err != nil {
+		return Friend{}, err
 	}
 	if acc.Debug == true {
 		fmt.Println(string(body))
@@ -1721,19 +1181,9 @@ func (acc *Account) AddFriend(friend string) (Friend, error) {
 
 // DeleteFriend deletes a friend on Snapchat.
 func (acc *Account) DeleteFriend(friend string) (Friend, error) {
-	ts := Timestamp()
-	data := map[string]string{
-		"username":  acc.Username,
-		"timestamp": ts,
-		"req_token": RequestToken(acc.Token, ts),
-		"action":    "delete",
-		"friend":    friend,
-	}
-
-	resp := acc.SendRequest("POST", "/bq/friend", data)
-	body, ioErr := ioutil.ReadAll(resp.Body)
-	if ioErr != nil {
-		return Friend{}, ioErr
+	body, err := acc.CasperClient.Friend(friend, "delete", "")
+	if err != nil {
+		return Friend{}, err
 	}
 	if acc.Debug == true {
 		fmt.Println(string(body))
@@ -1745,19 +1195,9 @@ func (acc *Account) DeleteFriend(friend string) (Friend, error) {
 
 // BlockFriend blocks a friend on Snapchat.
 func (acc *Account) BlockFriend(friend string) (Friend, error) {
-	ts := Timestamp()
-	data := map[string]string{
-		"username":  acc.Username,
-		"timestamp": ts,
-		"req_token": RequestToken(acc.Token, ts),
-		"action":    "block",
-		"friend":    friend,
-	}
-
-	resp := acc.SendRequest("POST", "/bq/friend", data)
-	body, ioErr := ioutil.ReadAll(resp.Body)
-	if ioErr != nil {
-		return Friend{}, ioErr
+	body, err := acc.CasperClient.Friend(friend, "block", "")
+	if err != nil {
+		return Friend{}, err
 	}
 	if acc.Debug == true {
 		fmt.Println(string(body))
@@ -1769,19 +1209,9 @@ func (acc *Account) BlockFriend(friend string) (Friend, error) {
 
 // UnblockFriend unblocks a friend on Snapchat.
 func (acc *Account) UnblockFriend(friend string) (Friend, error) {
-	ts := Timestamp()
-	data := map[string]string{
-		"username":  acc.Username,
-		"timestamp": ts,
-		"req_token": RequestToken(acc.Token, ts),
-		"action":    "unblock",
-		"friend":    friend,
-	}
-
-	resp := acc.SendRequest("POST", "/bq/friend", data)
-	body, ioErr := ioutil.ReadAll(resp.Body)
-	if ioErr != nil {
-		return Friend{}, ioErr
+	body, err := acc.CasperClient.Friend(friend, "unblock", "")
+	if err != nil {
+		return Friend{}, err
 	}
 	if acc.Debug == true {
 		fmt.Println(string(body))
@@ -1793,20 +1223,9 @@ func (acc *Account) UnblockFriend(friend string) (Friend, error) {
 
 // SetNickname sets a nickname of a friend on Snapchat.
 func (acc *Account) SetNickname(friend, nickname string) (Friend, error) {
-	ts := Timestamp()
-	data := map[string]string{
-		"username":  acc.Username,
-		"timestamp": ts,
-		"req_token": RequestToken(acc.Token, ts),
-		"action":    "display",
-		"friend":    friend,
-		"display":   nickname,
-	}
-
-	resp := acc.SendRequest("POST", "/bq/friend", data)
-	body, ioErr := ioutil.ReadAll(resp.Body)
-	if ioErr != nil {
-		return Friend{}, ioErr
+	body, err := acc.CasperClient.Friend(friend, "display", nickname)
+	if err != nil {
+		return Friend{}, err
 	}
 	if acc.Debug == true {
 		fmt.Println(string(body))
@@ -1817,30 +1236,17 @@ func (acc *Account) SetNickname(friend, nickname string) (Friend, error) {
 }
 
 // BestFriends fetches best friends and scores on Snapchat.
-func (acc *Account) BestFriends(friends []string) map[string]interface{} {
-	ts := Timestamp()
-	users, err := json.Marshal(friends)
+func (acc *Account) BestFriends(friends []string) (map[string]interface{}, error) {
+	body, err := acc.CasperClient.BestFriends(friends)
 	if err != nil {
-		fmt.Println(err)
-	}
-	data := map[string]string{
-		"username":         acc.Username,
-		"timestamp":        ts,
-		"req_token":        RequestToken(acc.Token, ts),
-		"friend_usernames": string(users),
-	}
-
-	resp := acc.SendRequest("POST", "/bq/bests", data)
-	body, ioErr := ioutil.ReadAll(resp.Body)
-	if ioErr != nil {
-		fmt.Println(ioErr)
+		return nil, err
 	}
 	if acc.Debug == true {
 		fmt.Println(string(body))
 	}
 	var parsed map[string]interface{}
 	json.Unmarshal(body, &parsed)
-	return parsed
+	return parsed, nil
 }
 
 // SetProxyURL sets given string addr, as a proxy addr. Primarily for debugging purposes.

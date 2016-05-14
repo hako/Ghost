@@ -700,47 +700,78 @@ type Updates struct {
 	} `json:"sponsored"`
 }
 
-// StorySnap holds a single snap in a collection of stories.
+// StorySnap holds a single snap for a story.
 type StorySnap struct {
+	JSON struct {
+		Story struct {
+			AdCanFollow   bool    `json:"ad_can_follow"`
+			ClientID      string  `json:"client_id"`
+			ID            string  `json:"id"`
+			IsFrontFacing bool    `json:"is_front_facing"`
+			IsShared      bool    `json:"is_shared"`
+			IsTitleSnap   bool    `json:"is_title_snap"`
+			MatureContent bool    `json:"mature_content"`
+			MediaID       string  `json:"media_id"`
+			MediaIv       string  `json:"media_iv"`
+			MediaKey      string  `json:"media_key"`
+			MediaType     int     `json:"media_type"`
+			MediaURL      string  `json:"media_url"`
+			NeedsAuth     bool    `json:"needs_auth"`
+			Orientation   int     `json:"orientation"`
+			ThumbnailIv   string  `json:"thumbnail_iv"`
+			ThumbnailURL  string  `json:"thumbnail_url"`
+			Time          float64 `json:"time"`
+			TimeLeft      int     `json:"time_left"`
+			Timestamp     int64   `json:"timestamp"`
+			Username      string  `json:"username"`
+			Zipped        bool    `json:"zipped"`
+		} `json:"story"`
+	} `json:"json"`
+}
+
+// StorySnapFull holds a single snap alongside with the snap information of the user
+// This is a special case model.
+type StorySnapFull struct {
+	SnapResponse struct {
+		Snaps struct {
+			User struct {
+				ID        string `json:"id"`
+				Pending   bool   `json:"pending"`
+				Timestamp int64  `json:"timestamp"`
+			} `json:"user"`
+		} `json:"snaps"`
+		SnapstreakData struct {
+		} `json:"snapstreak_data"`
+		Success bool `json:"success"`
+	} `json:"snap_response"`
 	StoryResponse struct {
 		JSON struct {
 			Story struct {
-				ID                 string  `json:"id"`
-				Username           string  `json:"username"`
-				MatureContent      bool    `json:"mature_content"`
-				ClientID           string  `json:"client_id"`
-				Timestamp          int64   `json:"timestamp"`
-				MediaID            string  `json:"media_id"`
-				MediaKey           string  `json:"media_key"`
-				MediaIv            string  `json:"media_iv"`
-				ThumbnailIv        string  `json:"thumbnail_iv"`
-				MediaType          int     `json:"media_type"`
-				Time               float64 `json:"time"`
-				CaptionTextDisplay string  `json:"caption_text_display"`
-				Zipped             bool    `json:"zipped"`
-				IsShared           bool    `json:"is_shared"`
-				IsTitleSnap        bool    `json:"is_title_snap"`
-				NeedsAuth          bool    `json:"needs_auth"`
-				AdCanFollow        bool    `json:"ad_can_follow"`
-				Orientation        int     `json:"orientation"`
-				IsFrontFacing      bool    `json:"is_front_facing"`
-				TimeLeft           int     `json:"time_left"`
-				MediaURL           string  `json:"media_url"`
-				ThumbnailURL       string  `json:"thumbnail_url"`
+				AdCanFollow   bool    `json:"ad_can_follow"`
+				ClientID      string  `json:"client_id"`
+				ID            string  `json:"id"`
+				IsFrontFacing bool    `json:"is_front_facing"`
+				IsShared      bool    `json:"is_shared"`
+				IsTitleSnap   bool    `json:"is_title_snap"`
+				MatureContent bool    `json:"mature_content"`
+				MediaID       string  `json:"media_id"`
+				MediaIv       string  `json:"media_iv"`
+				MediaKey      string  `json:"media_key"`
+				MediaType     int     `json:"media_type"`
+				MediaURL      string  `json:"media_url"`
+				NeedsAuth     bool    `json:"needs_auth"`
+				Orientation   int     `json:"orientation"`
+				ThumbnailIv   string  `json:"thumbnail_iv"`
+				ThumbnailURL  string  `json:"thumbnail_url"`
+				Time          float64 `json:"time"`
+				TimeLeft      int     `json:"time_left"`
+				Timestamp     int64   `json:"timestamp"`
+				Username      string  `json:"username"`
+				Zipped        bool    `json:"zipped"`
 			} `json:"story"`
 		} `json:"json"`
 		Success bool `json:"success"`
 	} `json:"story_response"`
-	SnapResponse struct {
-		Snaps struct {
-			EfrenPrice095B struct {
-				ID        string `json:"id"`
-				Timestamp int64  `json:"timestamp"`
-				Pending   bool   `json:"pending"`
-			} `json:"efren.price095b"`
-		} `json:"snaps"`
-		Success bool `json:"success"`
-	} `json:"snap_response"`
 }
 
 // Stories holds an entire 24 hour Snapchat story from the user's account.
